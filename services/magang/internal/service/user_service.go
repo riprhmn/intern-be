@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -43,7 +44,7 @@ func (s *UserService) GetByUsername(username string) (*models.User, error) {
 }
 
 func (s *UserService) VerifyPassword(plain, hashed string) bool {
-	// Support bcrypt accounts and legacy plaintext seed accounts.
+	// Existing accounts may use bcrypt while development seed accounts are plaintext.
 	if strings.HasPrefix(hashed, "$2") {
 		return bcrypt.CompareHashAndPassword([]byte(hashed), []byte(plain)) == nil
 	}
@@ -76,10 +77,24 @@ func (s *UserService) Create(req CreateUserRequest) error {
 	if !isAllowedUserRole(role) {
 		return errors.New("invalid role")
 	}
+	codeName := strings.ToUpper(strings.TrimSpace(req.CodeName))
+	if role == "approval" && codeName == "" {
+		return errors.New("code_name is required for approval user")
+	}
+	if codeName != "" {
+		exists, err := s.repo.CodeNameExists(codeName, 0)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return errors.New("code_name already exists")
+		}
+	}
 
 	user := &models.User{
 		NoEmp:      req.NoEmp,
 		IdEmp:      req.IdEmp,
+		CodeName:   codeName,
 		Username:   strings.TrimSpace(req.Username),
 		Password:   req.Password,
 		FullName:   strings.TrimSpace(req.FullName),
@@ -114,6 +129,20 @@ func (s *UserService) Update(id uint64, req UpdateUserRequest) error {
 		}
 		user.Role = role
 	}
+	codeName := strings.ToUpper(strings.TrimSpace(req.CodeName))
+	if user.Role == "approval" && codeName == "" {
+		return errors.New("code_name is required for approval user")
+	}
+	if codeName != "" {
+		exists, err := s.repo.CodeNameExists(codeName, id)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return errors.New("code_name already exists")
+		}
+	}
+	user.CodeName = codeName
 	if req.Password != "" {
 		user.Password = req.Password
 	}
@@ -145,6 +174,7 @@ func (s *UserService) Delete(id uint64) error {
 type CreateUserRequest struct {
 	NoEmp      string `json:"no_emp"`
 	IdEmp      string `json:"id_emp"`
+	CodeName   string `json:"code_name"`
 	Username   string `json:"username"`
 	Password   string `json:"password"`
 	FullName   string `json:"full_name"`
@@ -160,6 +190,7 @@ type CreateUserRequest struct {
 type UpdateUserRequest struct {
 	NoEmp      string `json:"no_emp"`
 	IdEmp      string `json:"id_emp"`
+	CodeName   string `json:"code_name"`
 	FullName   string `json:"full_name"`
 	Email      string `json:"email"`
 	Title      string `json:"title"`
@@ -169,4 +200,98 @@ type UpdateUserRequest struct {
 	Section    string `json:"section"`
 	Department string `json:"department"`
 	Division   string `json:"division"`
+}
+
+func (s *UserService) FilterOptions() (map[string][]string, error) {
+	return s.repo.FilterOptions()
+}
+
+type OrganizationSelection struct {
+	EndManager string `json:"endManager"`
+	MQDManager string `json:"mqdManager"`
+	SHOHead    string `json:"shoHead"`
+	TDIVHead   string `json:"tdivHead"`
+	GMM        string `json:"gmm"`
+}
+
+type organizationRule struct {
+	Key        string
+	Label      string
+	Title      string
+	Department string
+	Section    string
+	Division   string
+}
+
+var organizationRules = []organizationRule{
+	{Key: "endManager", Label: "END Manager", Title: "Manager", Department: "END"},
+	{Key: "mqdManager", Label: "MQD Manager", Title: "Manager", Department: "MQD"},
+	{Key: "shoHead", Label: "SHO Head", Title: "Section Head", Department: "SHO"},
+	{Key: "tdivHead", Label: "TDIV Head", Title: "Division Head", Division: "TDIV"},
+	{Key: "gmm", Label: "GMM", Title: "GMM"},
+}
+
+func normalizedOrganizationField(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(value), " "))
+}
+
+func matchesOrganizationRule(user *models.User, rule organizationRule) bool {
+	if user == nil || !user.IsActive || user.Role != "approval" || normalizedOrganizationField(user.Title) != normalizedOrganizationField(rule.Title) {
+		return false
+	}
+	if rule.Department != "" && normalizedOrganizationField(user.Department) != normalizedOrganizationField(rule.Department) {
+		return false
+	}
+	if rule.Section != "" && normalizedOrganizationField(user.Section) != normalizedOrganizationField(rule.Section) {
+		return false
+	}
+	return rule.Division == "" || normalizedOrganizationField(user.Division) == normalizedOrganizationField(rule.Division)
+}
+
+func (s *UserService) OrganizationOptions() (map[string][]*models.User, error) {
+	options := make(map[string][]*models.User, len(organizationRules))
+	users := []*models.User{}
+	for page := 1; ; page++ {
+		rows, total, err := s.repo.GetAll(repository.UserFilter{Role: "approval", Page: page, Limit: 100})
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, rows...)
+		if int64(page*100) >= total {
+			break
+		}
+	}
+	for _, rule := range organizationRules {
+		options[rule.Key] = []*models.User{}
+		for _, user := range users {
+			if matchesOrganizationRule(user, rule) {
+				options[rule.Key] = append(options[rule.Key], user)
+			}
+		}
+	}
+	return options, nil
+}
+
+func (s *UserService) ValidateOrganizationSelection(selection OrganizationSelection) error {
+	values := map[string]string{
+		"endManager": selection.EndManager,
+		"mqdManager": selection.MQDManager,
+		"shoHead":    selection.SHOHead,
+		"tdivHead":   selection.TDIVHead,
+		"gmm":        selection.GMM,
+	}
+	for _, rule := range organizationRules {
+		username := strings.TrimSpace(values[rule.Key])
+		if username == "" {
+			continue
+		}
+		user, err := s.repo.GetByUsername(username)
+		if err != nil {
+			return err
+		}
+		if !matchesOrganizationRule(user, rule) {
+			return fmt.Errorf("akun untuk %s tidak sesuai data Title, Department, Section, atau Division di Manage Account", rule.Label)
+		}
+	}
+	return nil
 }

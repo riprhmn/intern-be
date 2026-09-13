@@ -1,4 +1,4 @@
-﻿package handler
+package handler
 
 import (
 	"strconv"
@@ -30,6 +30,10 @@ func (h *UserHandler) GetAll(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 
 	filter := repository.UserFilter{
+		NoEmp: c.Query("no_emp"), IdEmp: c.Query("id_emp"),
+		CodeName: c.Query("code_name"),
+		FullName: c.Query("full_name"), Username: c.Query("username"),
+		Email: c.Query("email"), Title: c.Query("title"), Company: c.Query("company"),
 		Search:     search,
 		Role:       role,
 		Section:    section,
@@ -45,8 +49,14 @@ func (h *UserHandler) GetAll(c *gin.Context) {
 		return
 	}
 
+	options, err := h.svc.FilterOptions()
+	if err != nil {
+		response.InternalError(c, "Gagal memuat pilihan filter")
+		return
+	}
 	response.OK(c, gin.H{
-		"data": users,
+		"filter_options": options,
+		"data":           users,
 		"pagination": gin.H{
 			"page":     page,
 			"limit":    limit,
@@ -74,6 +84,28 @@ func (h *UserHandler) GetByID(c *gin.Context) {
 	}
 
 	response.OK(c, user, "success")
+}
+
+func (h *UserHandler) OrganizationOptions(c *gin.Context) {
+	options, err := h.svc.OrganizationOptions()
+	if err != nil {
+		response.InternalError(c, "Gagal memuat pilihan strata organisasi")
+		return
+	}
+	response.OK(c, options, "success")
+}
+
+func (h *UserHandler) ValidateOrganizationSelection(c *gin.Context) {
+	var selection service.OrganizationSelection
+	if err := c.ShouldBindJSON(&selection); err != nil {
+		response.BadRequest(c, "Data strata organisasi tidak valid")
+		return
+	}
+	if err := h.svc.ValidateOrganizationSelection(selection); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.OK(c, nil, "Strata organisasi valid")
 }
 
 func (h *UserHandler) Create(c *gin.Context) {

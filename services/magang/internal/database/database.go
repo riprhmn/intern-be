@@ -71,9 +71,24 @@ func autoMigrate(db *gorm.DB) {
 		END IF;
 	END $$`)
 
-	if err := db.AutoMigrate(&models.User{}, &models.Item{}, &models.ChangeNote{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.Item{}, &models.ChangeNote{}, &models.ApprovalMapping{}, &models.ApprovalDelegation{}); err != nil {
 		log.Printf("auto migrate note: %v", err)
 	}
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_mapping_entry_unique ON magang.approval_mappings (approval_type, section_code, sequence, user_id) WHERE is_active = true`)
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_mapping_cn_sequence_unique ON magang.approval_mappings (approval_type, section_code, sequence) WHERE is_active = true AND approval_type = 'CN'`)
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_delegation_active_scope ON magang.approval_delegations (from_user_id, approval_type, section_code) WHERE is_active = true`)
+	db.Exec(`DO $$ BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'approval_mappings_scope_check') THEN
+			ALTER TABLE magang.approval_mappings ADD CONSTRAINT approval_mappings_scope_check
+			CHECK (approval_type IN ('CN', 'ANCR') AND BTRIM(section_code) <> '' AND sequence > 0);
+		END IF;
+	END $$`)
+	db.Exec(`DO $$ BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'approval_delegations_scope_check') THEN
+			ALTER TABLE magang.approval_delegations ADD CONSTRAINT approval_delegations_scope_check
+			CHECK (approval_type IN ('ALL', 'CN', 'ANCR') AND BTRIM(section_code) <> '' AND from_user_id <> to_user_id AND (starts_at IS NULL OR ends_at IS NULL OR ends_at > starts_at));
+		END IF;
+	END $$`)
 	log.Println("database migration completed")
 }
 

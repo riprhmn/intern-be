@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"magang-be/services/magang/internal/database"
 	"magang-be/services/magang/internal/handler"
 	"magang-be/services/magang/internal/service"
 	"magang-be/services/magang/pkg/middleware"
@@ -11,6 +12,7 @@ import (
 func SetupRouter(r *gin.Engine, itemSvc *service.ItemService, userSvc *service.UserService, changeNoteSvc *service.ChangeNoteService, authHandler *handler.AuthHandler, jwtSecret string) {
 	itemHandler := handler.NewItemHandler(itemSvc)
 	userHandler := handler.NewUserHandler(userSvc)
+	approvalSettingHandler := handler.NewApprovalSettingHandler(service.NewApprovalSettingService(database.DB))
 	changeNoteHandler := handler.NewChangeNoteHandler(changeNoteSvc, userSvc)
 
 	v1 := r.Group("/api/v1/magang")
@@ -41,6 +43,18 @@ func SetupRouter(r *gin.Engine, itemSvc *service.ItemService, userSvc *service.U
 				users.POST("", userHandler.Create)
 				users.PUT("/:id", userHandler.Update)
 				users.DELETE("/:id", userHandler.Delete)
+			}
+
+			approvalSettings := protected.Group("/approval-settings", middleware.RequireRole("admin"))
+			{
+				approvalSettings.GET("/options", approvalSettingHandler.Options)
+				approvalSettings.GET("/mappings", approvalSettingHandler.GetMapping)
+				approvalSettings.PUT("/mappings/:approvalType/:sectionCode", approvalSettingHandler.ReplaceMapping)
+				approvalSettings.DELETE("/mappings/:approvalType/:sectionCode", approvalSettingHandler.DeleteMapping)
+				approvalSettings.GET("/delegations", approvalSettingHandler.GetDelegations)
+				approvalSettings.POST("/delegations", approvalSettingHandler.CreateDelegation)
+				approvalSettings.PUT("/delegations/:id", approvalSettingHandler.UpdateDelegation)
+				approvalSettings.DELETE("/delegations/:id", approvalSettingHandler.DeactivateDelegation)
 			}
 
 			// Change Notes routes
