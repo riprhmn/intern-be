@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS magang.users (
     id BIGSERIAL PRIMARY KEY,
     no_emp VARCHAR(50),
     id_emp VARCHAR(50),
+    code_name VARCHAR(50),
     username VARCHAR(100) NOT NULL UNIQUE,
     password VARCHAR(255) NOT NULL,
     full_name VARCHAR(255) NOT NULL,
@@ -29,7 +30,6 @@ CREATE TABLE IF NOT EXISTS magang.users (
 ALTER TABLE magang.users ADD COLUMN IF NOT EXISTS no_emp VARCHAR(50);
 ALTER TABLE magang.users ADD COLUMN IF NOT EXISTS id_emp VARCHAR(50);
 ALTER TABLE magang.users ADD COLUMN IF NOT EXISTS code_name VARCHAR(50);
-ALTER TABLE magang.users ADD COLUMN IF NOT EXISTS level_rank INT NOT NULL DEFAULT 4; -- 1: DivHead, 2: DeptHead, 3: SecHead, 4: Staff
 ALTER TABLE magang.users ADD COLUMN IF NOT EXISTS email VARCHAR(255);
 ALTER TABLE magang.users ADD COLUMN IF NOT EXISTS title VARCHAR(150);
 ALTER TABLE magang.users ADD COLUMN IF NOT EXISTS company VARCHAR(255);
@@ -57,71 +57,12 @@ CREATE TABLE IF NOT EXISTS magang.items (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
--- Tabel Master Mapping Approval Per Seksi & Tipe Dokumen
-CREATE TABLE IF NOT EXISTS magang.approval_mappings (
-    id BIGSERIAL PRIMARY KEY,
-    approval_type VARCHAR(10) NOT NULL, -- 'CN' atau 'ANCR'
-    section_code VARCHAR(100) NOT NULL,
-    seq_1 VARCHAR(50), -- CODE_NAME Stage 1
-    seq_2 VARCHAR(50), -- CODE_NAME Stage 2
-    seq_3 VARCHAR(50), -- CODE_NAME Stage 3
-    seq_4 VARCHAR(50), -- CODE_NAME Stage 4
-    is_active BOOLEAN NOT NULL DEFAULT true,
-    created_by BIGINT,
-    updated_by BIGINT,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
--- Tabel Delegasi Cuti
-CREATE TABLE IF NOT EXISTS magang.approval_delegations (
-    id BIGSERIAL PRIMARY KEY,
-    from_user_id BIGINT NOT NULL REFERENCES magang.users(id),
-    to_user_id BIGINT NOT NULL REFERENCES magang.users(id),
-    approval_type VARCHAR(10) NOT NULL DEFAULT 'ALL',
-    section_code VARCHAR(100) NOT NULL DEFAULT 'ALL',
-    starts_at TIMESTAMP,
-    ends_at TIMESTAMP,
-    is_active BOOLEAN NOT NULL DEFAULT true,
-    created_by BIGINT,
-    updated_by BIGINT,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
--- Tabel Relasional Transaksi Approval (Header & Detail)
-CREATE TABLE IF NOT EXISTS magang.transaction_headers (
-    id BIGSERIAL PRIMARY KEY,
-    doc_number VARCHAR(100) NOT NULL UNIQUE,
-    approval_type VARCHAR(10) NOT NULL, -- 'CN' atau 'ANCR'
-    section_code VARCHAR(100) NOT NULL,
-    current_seq INT NOT NULL DEFAULT 1,
-    status VARCHAR(50) NOT NULL DEFAULT 'IN PROGRESS', -- 'IN PROGRESS', 'APPROVED', 'REJECTED'
-    created_by BIGINT NOT NULL REFERENCES magang.users(id),
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS magang.transaction_details (
-    id BIGSERIAL PRIMARY KEY,
-    header_id BIGINT NOT NULL REFERENCES magang.transaction_headers(id) ON DELETE CASCADE,
-    seq_stage INT NOT NULL,
-    target_code_name VARCHAR(50) NOT NULL,
-    executed_by_user_id BIGINT REFERENCES magang.users(id),
-    delegated_from_user_id BIGINT REFERENCES magang.users(id),
-    action VARCHAR(20), -- 'APPROVE', 'REJECT'
-    notes TEXT,
-    executed_at TIMESTAMP,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
 -- Seed user (password: admin123)
-INSERT INTO magang.users (username, password, full_name, role, code_name, level_rank)
-VALUES ('admin', 'admin123', 'Admin Magang', 'admin', 'AD', 1)
+INSERT INTO magang.users (username, password, full_name, role)
+VALUES ('admin', 'admin123', 'Admin Magang', 'admin')
 ON CONFLICT (username) DO NOTHING;
 
 -- Seed normal user (password: user123)
-INSERT INTO magang.users (username, password, full_name, role, code_name, level_rank)
-VALUES ('user', 'user123', 'User Magang', 'user', 'AG', 4)
+INSERT INTO magang.users (username, password, full_name, role)
+VALUES ('user', 'user123', 'User Magang', 'user')
 ON CONFLICT (username) DO NOTHING;
-

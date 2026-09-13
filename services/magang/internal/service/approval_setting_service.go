@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,11 +20,18 @@ func NewApprovalSettingService(db *gorm.DB) *ApprovalSettingService {
 	return &ApprovalSettingService{db: db}
 }
 
-type CodeMappingRequest struct {
-	Seq1 string `json:"seq_1"`
-	Seq2 string `json:"seq_2"`
-	Seq3 string `json:"seq_3"`
-	Seq4 string `json:"seq_4"`
+type MappingEntryInput struct {
+	Sequence int    `json:"sequence"`
+	UserID   uint64 `json:"user_id"`
+	CodeName string `json:"code_name"`
+}
+
+type ReplaceMappingRequest struct {
+	Entries []MappingEntryInput `json:"entries"`
+	Seq1    string              `json:"seq_1"`
+	Seq2    string              `json:"seq_2"`
+	Seq3    string              `json:"seq_3"`
+	Seq4    string              `json:"seq_4"`
 }
 
 type DelegationRequest struct {
@@ -54,8 +62,8 @@ func normalizeApprovalScope(approvalType, sectionCode string, allowAll bool) (st
 
 func (s *ApprovalSettingService) Options() (map[string]interface{}, error) {
 	users := []models.User{}
-	if err := s.db.Where("is_active = ?", true).
-		Order("level_rank, full_name").Find(&users).Error; err != nil {
+	if err := s.db.Where("is_active = ? AND role = ? AND BTRIM(code_name) <> ''", true, "approval").
+		Order("code_name, full_name").Find(&users).Error; err != nil {
 		return nil, err
 	}
 	sections := []string{}
@@ -69,55 +77,159 @@ func (s *ApprovalSettingService) Options() (map[string]interface{}, error) {
 }
 
 func (s *ApprovalSettingService) Mapping(approvalType, sectionCode string) ([]models.ApprovalMapping, error) {
-	approvalType, sectionCode, err := normalizeApprovalScope(approvalType, sectionCode, false)
+	approvalType, sectionCode, err := normalizeApprovalScope(approvalType, sectionCode, true)
 	if err != nil {
 		return nil, err
 	}
 	rows := []models.ApprovalMapping{}
-	err = s.db.Where(
-		"approval_type = ? AND section_code = ? AND is_active = ?",
-		approvalType, sectionCode, true,
-	).Order("id").Find(&rows).Error
+	query := s.db.Preload("User").Where("approval_type = ? AND is_active = ?", approvalType, true)
+	if sectionCode != "" && sectionCode != "ALL" {
+		query = query.Where("section_code = ?", sectionCode)
+	}
+	err = query.Order("section_code, sequence, id").Find(&rows).Error
 	return rows, err
 }
 
-func (s *ApprovalSettingService) ReplaceMapping(approvalType, sectionCode string, actorID uint64, req CodeMappingRequest) (*models.ApprovalMapping, error) {
+func validateMappingEntries(approvalType string, entries []MappingEntryInput) error {
+	if len(entries) == 0 {
+		return errors.New("master mapping tidak boleh kosong")
+	}
+	sequences := make(map[int]int)
+	users := make(map[uint64]struct{})
+	for _, entry := range entries {
+		if entry.Sequence < 1 {
+			return errors.New("setiap mapping wajib memiliki sequence positif")
+		}
+		if entry.UserID == 0 {
+			continue
+		}
+		sequences[entry.Sequence]++
+		users[entry.UserID] = struct{}{}
+	}
+	ordered := make([]int, 0, len(sequences))
+	for sequence := range sequences {
+		ordered = append(ordered, sequence)
+	}
+	sort.Ints(ordered)
+	for index, sequence := range ordered {
+		if sequence != index+1 {
+			return errors.New("sequence harus berurutan mulai dari 1 tanpa lompatan")
+		}
+	}
+	if approvalType == "CN" {
+		for _, count := range sequences {
+			if count > 1 {
+				return errors.New("CN hanya boleh memiliki satu approver pada setiap sequence")
+			}
+		}
+	}
+	return nil
+}
+
+func (s *ApprovalSettingService) validateApprovalUsers(entries []MappingEntryInput) error {
+	for _, entry := range entries {
+		var count int64
+		if err := s.db.Model(&models.User{}).Where(
+			"id = ? AND is_active = ? AND BTRIM(COALESCE(code_name, '')) <> ''",
+			entry.UserID, true,
+		).Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
+			return fmt.Errorf("user %d tidak ditemukan atau belum memiliki CODE_NAME", entry.UserID)
+		}
+	}
+	return nil
+}
+
+func (s *ApprovalSettingService) ReplaceMapping(approvalType, sectionCode string, actorID uint64, req ReplaceMappingRequest) ([]models.ApprovalMapping, error) {
 	approvalType, sectionCode, err := normalizeApprovalScope(approvalType, sectionCode, false)
 	if err != nil {
 		return nil, err
 	}
-	var existing models.ApprovalMapping
-	err = s.db.Where("approval_type = ? AND section_code = ?", approvalType, sectionCode).First(&existing).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, err
+
+	var finalEntries []MappingEntryInput
+
+	if len(req.Entries) > 0 {
+		for _, entry := range req.Entries {
+			code := strings.TrimSpace(entry.CodeName)
+			if strings.Contains(code, "—") {
+				code = strings.TrimSpace(strings.Split(code, "—")[0])
+			} else if strings.Contains(code, " - ") {
+				code = strings.TrimSpace(strings.Split(code, " - ")[0])
+			}
+			code = strings.ToUpper(code)
+
+			if code != "" {
+				var u models.User
+				if err := s.db.Where("is_active = ? AND (LOWER(BTRIM(code_name)) = LOWER(?) OR LOWER(BTRIM(username)) = LOWER(?))", true, code, code).First(&u).Error; err == nil {
+					finalEntries = append(finalEntries, MappingEntryInput{
+						Sequence: entry.Sequence,
+						UserID:   u.ID,
+						CodeName: u.CodeName,
+					})
+				}
+			}
+		}
 	}
 
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		existing = models.ApprovalMapping{
-			ApprovalType: approvalType,
-			SectionCode:  sectionCode,
-			Seq1:         strings.ToUpper(strings.TrimSpace(req.Seq1)),
-			Seq2:         strings.ToUpper(strings.TrimSpace(req.Seq2)),
-			Seq3:         strings.ToUpper(strings.TrimSpace(req.Seq3)),
-			Seq4:         strings.ToUpper(strings.TrimSpace(req.Seq4)),
-			IsActive:     true,
-			CreatedBy:    actorID,
-			UpdatedBy:    actorID,
-		}
-		if err := s.db.Create(&existing).Error; err != nil {
-			return nil, err
-		}
-	} else {
-		existing.Seq1 = strings.ToUpper(strings.TrimSpace(req.Seq1))
-		existing.Seq2 = strings.ToUpper(strings.TrimSpace(req.Seq2))
-		existing.Seq3 = strings.ToUpper(strings.TrimSpace(req.Seq3))
-		existing.Seq4 = strings.ToUpper(strings.TrimSpace(req.Seq4))
-		existing.UpdatedBy = actorID
-		if err := s.db.Save(&existing).Error; err != nil {
-			return nil, err
+	if len(finalEntries) == 0 {
+		codes := []string{req.Seq1, req.Seq2, req.Seq3, req.Seq4}
+		for i, code := range codes {
+			code = strings.TrimSpace(code)
+			if strings.Contains(code, "—") {
+				code = strings.TrimSpace(strings.Split(code, "—")[0])
+			} else if strings.Contains(code, " - ") {
+				code = strings.TrimSpace(strings.Split(code, " - ")[0])
+			}
+			code = strings.ToUpper(code)
+
+			if code != "" {
+				var u models.User
+				if err := s.db.Where("is_active = ? AND (LOWER(BTRIM(code_name)) = LOWER(?) OR LOWER(BTRIM(username)) = LOWER(?))", true, code, code).First(&u).Error; err == nil {
+					finalEntries = append(finalEntries, MappingEntryInput{
+						Sequence: i + 1,
+						UserID:   u.ID,
+						CodeName: u.CodeName,
+					})
+				}
+			}
 		}
 	}
-	return &existing, nil
+
+	req.Entries = finalEntries
+
+	if err := validateMappingEntries(approvalType, req.Entries); err != nil {
+		return nil, err
+	}
+	if err := s.validateApprovalUsers(req.Entries); err != nil {
+		return nil, err
+	}
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("approval_type = ? AND section_code = ?", approvalType, sectionCode).
+			Delete(&models.ApprovalMapping{}).Error; err != nil {
+			return err
+		}
+		if len(req.Entries) == 0 {
+			return nil
+		}
+		for _, entry := range req.Entries {
+			now := time.Now()
+			err := tx.Exec(`
+				INSERT INTO magang.approval_mappings 
+				(approval_type, section_code, sequence, user_id, is_active, created_by, updated_by, created_at, updated_at) 
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, approvalType, sectionCode, entry.Sequence, entry.UserID, true, actorID, actorID, now, now).Error
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.Mapping(approvalType, sectionCode)
 }
 
 func (s *ApprovalSettingService) DeleteMapping(approvalType, sectionCode string) error {
@@ -161,7 +273,6 @@ func (s *ApprovalSettingService) validateDelegation(req DelegationRequest, exclu
 	if req.StartsAt != nil && req.EndsAt != nil && !req.EndsAt.After(*req.StartsAt) {
 		return req, errors.New("waktu berakhir harus setelah waktu mulai")
 	}
-
 	var fromUser, toUser models.User
 	if err := s.db.First(&fromUser, req.FromUserID).Error; err != nil {
 		return req, errors.New("user FROM tidak ditemukan")
@@ -178,7 +289,6 @@ func (s *ApprovalSettingService) validateDelegation(req DelegationRequest, exclu
 			return req, fmt.Errorf("pejabat level %d (%s) hanya dapat mendelegasikan ke pejabat setingkat atau 1 tingkat di bawahnya", fromUser.LevelRank, fromUser.FullName)
 		}
 	}
-
 	var duplicate int64
 	query := s.db.Model(&models.ApprovalDelegation{}).Where(
 		"from_user_id = ? AND approval_type = ? AND section_code = ? AND is_active = ?",

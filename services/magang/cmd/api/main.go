@@ -34,6 +34,12 @@ func main() {
 	changeNoteRepo := repository.NewChangeNoteRepository(database.DB)
 	changeNoteSvc := service.NewChangeNoteService(changeNoteRepo)
 
+	ancrRepo := repository.NewANCRRepository(database.DB)
+	ancrSvc := service.NewANCRService(ancrRepo)
+	ancrHandler := handler.NewANCRHandler(ancrSvc, userSvc)
+	approvalSettingSvc := service.NewApprovalSettingService(database.DB)
+	approvalSettingHandler := handler.NewApprovalSettingHandler(approvalSettingSvc)
+
 	authHandler := handler.NewAuthHandler(userSvc, config.App.Auth.JWTSecret)
 
 	r := gin.Default()
@@ -52,7 +58,7 @@ func main() {
 
 	r.POST("/api/v1/magang/auth/login", authHandler.Login)
 
-	v1.SetupRouter(r, itemSvc, userSvc, changeNoteSvc, authHandler, config.App.Auth.JWTSecret)
+	v1.SetupRouter(r, itemSvc, userSvc, changeNoteSvc, ancrHandler, approvalSettingHandler, authHandler, config.App.Auth.JWTSecret)
 
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", config.App.Server.Port),

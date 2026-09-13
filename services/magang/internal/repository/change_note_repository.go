@@ -25,7 +25,7 @@ func (r *ChangeNoteRepository) GetAll(search string, userID uint64, role string,
 
 	if search != "" {
 		like := "%" + search + "%"
-		base = base.Where("initiator ILIKE ? OR emp_id_initiator ILIKE ? OR department ILIKE ? OR change_pertains_to ILIKE ?", like, like, like, like)
+		base = base.Where("initiator ILIKE ? OR emp_id_initiator ILIKE ? OR department ILIKE ? OR change_pertains_to ILIKE ? OR document_code ILIKE ? OR registration_number ILIKE ?", like, like, like, like, like, like)
 	}
 
 	var total int64

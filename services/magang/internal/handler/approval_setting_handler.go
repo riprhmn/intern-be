@@ -54,17 +54,17 @@ func (h *ApprovalSettingHandler) GetMapping(c *gin.Context) {
 }
 
 func (h *ApprovalSettingHandler) ReplaceMapping(c *gin.Context) {
-	var req service.CodeMappingRequest
+	var req service.ReplaceMappingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Data mapping tidak valid")
 		return
 	}
-	row, err := h.svc.ReplaceMapping(c.Param("approvalType"), c.Param("sectionCode"), actorID(c), req)
+	rows, err := h.svc.ReplaceMapping(c.Param("approvalType"), c.Param("sectionCode"), actorID(c), req)
 	if err != nil {
 		response.BadRequest(c, err.Error())
 		return
 	}
-	response.OK(c, row, "Mapping approval berhasil disimpan")
+	response.OK(c, rows, "Mapping approval berhasil disimpan")
 }
 
 func (h *ApprovalSettingHandler) DeleteMapping(c *gin.Context) {

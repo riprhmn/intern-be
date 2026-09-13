@@ -7,7 +7,7 @@ type User struct {
 	NoEmp      string    `gorm:"column:no_emp;type:varchar(50)"                         json:"no_emp"`
 	IdEmp      string    `gorm:"column:id_emp;type:varchar(50)"                         json:"id_emp"`
 	CodeName   string    `gorm:"column:code_name;type:varchar(50)"                     json:"code_name"`
-	LevelRank  int       `gorm:"column:level_rank;not null;default:4"                  json:"level_rank"` // 1: DivHead, 2: DeptHead, 3: SecHead, 4: Staff
+	LevelRank  int       `gorm:"column:level_rank;type:integer;default:4"               json:"level_rank"`
 	Username   string    `gorm:"column:username;type:varchar(100);not null;unique"       json:"username"`
 	Password   string    `gorm:"column:password;type:varchar(255);not null"             json:"-"`
 	FullName   string    `gorm:"column:full_name;type:varchar(255);not null"            json:"full_name"`

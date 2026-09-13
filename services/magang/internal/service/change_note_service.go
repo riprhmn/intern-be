@@ -3,6 +3,9 @@ package service
 import (
 	"magang-be/services/magang/internal/models"
 	"magang-be/services/magang/internal/repository"
+	"time"
+
+	"gorm.io/gorm"
 )
 
 type ChangeNoteService struct {
@@ -25,6 +28,12 @@ func (s *ChangeNoteService) GetAll(search string, userID uint64, role string, pa
 }
 
 func (s *ChangeNoteService) GetByID(id uint64) (*models.ChangeNote, error) {
+	if err := s.refreshPendingCNFixedApprovers(); err != nil {
+		return nil, err
+	}
+	if err := s.refreshPendingCNDelegations(); err != nil {
+		return nil, err
+	}
 	return s.repo.GetByID(id)
 }
 
@@ -32,7 +41,17 @@ func (s *ChangeNoteService) Create(cn *models.ChangeNote) error {
 	if cn.Status == "" {
 		cn.Status = "SUBMITTED"
 	}
-	return s.repo.Create(cn)
+	return s.repo.DB.Transaction(func(tx *gorm.DB) error {
+		if cn.CreatedAt.IsZero() {
+			cn.CreatedAt = time.Now()
+		}
+		number, err := nextCNSerial(tx, cnNumberKindRegistration, cnYear(cn.CreatedAt))
+		if err != nil {
+			return err
+		}
+		cn.RegistrationNumber = formatCNRegistrationNumber(cnYear(cn.CreatedAt), number)
+		return tx.Create(cn).Error
+	})
 }
 
 func (s *ChangeNoteService) Update(cn *models.ChangeNote) error {

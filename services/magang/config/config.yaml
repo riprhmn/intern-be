@@ -10,4 +10,4 @@ database:
   sslmode: disable
 
 auth:
-  jwt_secret: ""
+  jwt_secret: "magang-secret-key-2026"
