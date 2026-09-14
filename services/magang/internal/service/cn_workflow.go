@@ -588,10 +588,11 @@ func startCNMasterApproval(tx *gorm.DB, cn *models.ChangeNote) (bool, error) {
 func activeCNDelegate(tx *gorm.DB, fromUserID uint64, section string) (uint64, error) {
 	var delegation models.ApprovalDelegation
 	now := time.Now().UTC()
+	secNorm := strings.TrimSpace(section)
 	err := tx.Where(
-		"from_user_id = ? AND is_active = ? AND approval_type IN ? AND section_code IN ? AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?)",
-		fromUserID, true, []string{"CN", "ALL"}, []string{section, "ALL"}, now, now,
-	).Order(clause.Expr{SQL: "CASE WHEN approval_type = 'CN' THEN 0 ELSE 1 END, CASE WHEN section_code = ? THEN 0 ELSE 1 END, created_at DESC", Vars: []interface{}{section}, WithoutParentheses: true}).
+		"from_user_id = ? AND is_active = ? AND approval_type IN ? AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?)",
+		fromUserID, true, []string{"CN", "ALL"}, now, now,
+	).Order(clause.Expr{SQL: "CASE WHEN approval_type = 'CN' THEN 0 ELSE 1 END, CASE WHEN LOWER(TRIM(section_code)) = LOWER(?) THEN 0 WHEN section_code = 'ALL' THEN 1 ELSE 2 END, created_at DESC", Vars: []interface{}{secNorm}, WithoutParentheses: true}).
 		First(&delegation).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, nil
@@ -760,18 +761,25 @@ func (s *ChangeNoteService) refreshPendingCNDelegations() error {
 	return s.repo.DB.Transaction(func(tx *gorm.DB) error {
 		var notes []models.ChangeNote
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where(
-			"status = ? AND workflow_source = ?", "WAITING_APPROVAL", cnWorkflowMasterMapping,
+			"status = ?", "WAITING_APPROVAL",
 		).Find(&notes).Error; err != nil {
 			return err
 		}
 		for i := range notes {
 			changed := false
+			sec := notes[i].WorkflowSection
+			if sec == "" {
+				sec = notes[i].Section
+			}
+			if sec == "" {
+				sec = notes[i].Department
+			}
 			for stageIndex := 1; stageIndex < len(notes[i].Stages)-1; stageIndex++ {
 				stage := &notes[i].Stages[stageIndex]
 				if stage.Status != "WAITING_APPROVAL" || stage.ActedAt != nil {
 					continue
 				}
-				delegateID, err := activeCNDelegate(tx, stage.UserID, notes[i].WorkflowSection)
+				delegateID, err := activeCNDelegate(tx, stage.UserID, sec)
 				if err != nil {
 					return err
 				}
