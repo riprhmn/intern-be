@@ -76,16 +76,18 @@ func autoMigrate(db *gorm.DB) {
 		);
 	`)
 
-	if err := db.AutoMigrate(&models.User{}, &models.Item{}, &models.ChangeNote{}, &models.CNApprovalConfig{}, &models.CNNumberCounter{}, &models.DocumentTemplate{}, &models.ANCRRequest{}, &models.ApprovalMapping{}, &models.ApprovalDelegation{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.Item{}, &models.ChangeNote{}, &models.CNNumberCounter{}, &models.DocumentTemplate{}, &models.ANCRRequest{}, &models.ApprovalMapping{}, &models.ApprovalDelegation{}); err != nil {
 		log.Fatalf("database migration failed: %v", err)
 	}
+	// Approval Mapping replaces the retired department/title-based CN config.
+	db.Exec(`DROP TABLE IF EXISTS magang.cn_approval_configs`)
 
 	db.Exec("ALTER TABLE magang.change_notes ADD COLUMN IF NOT EXISTS document_name VARCHAR(255)")
 	db.Exec("ALTER TABLE magang.change_notes ADD COLUMN IF NOT EXISTS document_data TEXT")
+	db.Exec(`ALTER TABLE magang.change_notes ALTER COLUMN workflow_source SET DEFAULT 'PENDING_MASTER_MAPPING'`)
+	db.Exec(`UPDATE magang.change_notes SET workflow_source = 'PENDING_MASTER_MAPPING' WHERE workflow_source = 'LEGACY'`)
 	// Normalize the MQD approval-stage label without discarding existing assignments.
-	db.Exec(`UPDATE magang.cn_approval_configs SET stages = REPLACE(stages, 'MOD Manager', 'MQD Manager') WHERE stages LIKE '%MOD Manager%'`)
 	db.Exec(`UPDATE magang.change_notes SET stages = REPLACE(stages, 'MOD Manager', 'MQD Manager') WHERE stages LIKE '%MOD Manager%'`)
-	db.Exec(`UPDATE magang.cn_approval_configs SET stages = REPLACE(stages, '"label":"MQD"', '"label":"MQD Manager"') WHERE stages LIKE '%"label":"MQD"%'`)
 	db.Exec(`UPDATE magang.change_notes SET stages = REPLACE(stages, '"label":"MQD"', '"label":"MQD Manager"') WHERE stages LIKE '%"label":"MQD"%'`)
 	// Change Note Number is a system-generated numeric identifier, never a file name.
 	db.Exec(`UPDATE magang.change_notes SET document_code = EXTRACT(YEAR FROM created_at)::INTEGER::TEXT || '-' || id::TEXT WHERE document_code <> '' AND document_code !~ '^[0-9]{4}-[0-9]+$'`)
@@ -95,15 +97,20 @@ func autoMigrate(db *gorm.DB) {
 	}
 	db.Exec(`UPDATE magang.users SET title = 'Manager' WHERE LOWER(TRIM(title)) = 'concern manager'`)
 	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_code_name_unique ON magang.users (LOWER(BTRIM(code_name))) WHERE BTRIM(COALESCE(code_name, '')) <> ''`)
-	db.Exec(`ALTER TABLE magang.approval_mappings ALTER COLUMN sequence DROP NOT NULL`)
-	db.Exec(`ALTER TABLE magang.approval_mappings ALTER COLUMN user_id DROP NOT NULL`)
-	db.Exec(`ALTER TABLE magang.approval_mappings ADD COLUMN IF NOT EXISTS seq_1 VARCHAR(50)`)
-	db.Exec(`ALTER TABLE magang.approval_mappings ADD COLUMN IF NOT EXISTS seq_2 VARCHAR(50)`)
-	db.Exec(`ALTER TABLE magang.approval_mappings ADD COLUMN IF NOT EXISTS seq_3 VARCHAR(50)`)
-	db.Exec(`ALTER TABLE magang.approval_mappings ADD COLUMN IF NOT EXISTS seq_4 VARCHAR(50)`)
+	// Retire incomplete rows and the obsolete wide seq_1..seq_4 representation.
+	db.Exec(`DELETE FROM magang.approval_mappings WHERE sequence IS NULL OR user_id IS NULL`)
+	db.Exec(`ALTER TABLE magang.approval_mappings ALTER COLUMN sequence SET NOT NULL`)
+	db.Exec(`ALTER TABLE magang.approval_mappings ALTER COLUMN user_id SET NOT NULL`)
+	db.Exec(`ALTER TABLE magang.approval_mappings DROP COLUMN IF EXISTS seq_1`)
+	db.Exec(`ALTER TABLE magang.approval_mappings DROP COLUMN IF EXISTS seq_2`)
+	db.Exec(`ALTER TABLE magang.approval_mappings DROP COLUMN IF EXISTS seq_3`)
+	db.Exec(`ALTER TABLE magang.approval_mappings DROP COLUMN IF EXISTS seq_4`)
 	db.Exec(`ALTER TABLE magang.approval_mappings DROP CONSTRAINT IF EXISTS approval_mappings_scope_check`)
 	db.Exec(`DROP INDEX IF EXISTS magang.idx_approval_mapping_entry_unique`)
 	db.Exec(`DROP INDEX IF EXISTS magang.idx_approval_mapping_cn_sequence_unique`)
+	db.Exec(`ALTER TABLE magang.approval_mappings ADD CONSTRAINT approval_mappings_scope_check CHECK (approval_type IN ('CN', 'ANCR') AND BTRIM(section_code) <> '' AND sequence > 0)`)
+	db.Exec(`CREATE UNIQUE INDEX idx_approval_mapping_entry_unique ON magang.approval_mappings (approval_type, section_code, sequence, user_id) WHERE is_active = true`)
+	db.Exec(`CREATE UNIQUE INDEX idx_approval_mapping_cn_sequence_unique ON magang.approval_mappings (approval_type, section_code, sequence) WHERE approval_type = 'CN' AND is_active = true`)
 
 	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_delegation_active_scope ON magang.approval_delegations (from_user_id, approval_type, section_code) WHERE is_active = true`)
 	db.Exec(`DO $$ BEGIN
@@ -117,7 +124,7 @@ func autoMigrate(db *gorm.DB) {
 
 func migrateChangeNoteNumbers(db *gorm.DB) error {
 	return db.Transaction(func(tx *gorm.DB) error {
-		// Remove the legacy non-partial index: empty values must remain valid while
+		// Remove the obsolete non-partial index: empty values must remain valid while
 		// old rows are being backfilled during the first deployment.
 		if err := tx.Exec(`DROP INDEX IF EXISTS magang.idx_magang_change_notes_registration_number`).Error; err != nil {
 			return err

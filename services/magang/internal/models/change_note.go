@@ -18,15 +18,6 @@ type CNEvent struct {
 	Comment   string    `json:"comment"`
 	At        time.Time `json:"at"`
 }
-type CNApprovalConfig struct {
-	ID         uint64          `gorm:"primaryKey" json:"id"`
-	Department string          `gorm:"uniqueIndex:cn_org;not null" json:"department"`
-	Section    string          `gorm:"uniqueIndex:cn_org;not null" json:"section"`
-	Stages     []ApprovalStage `gorm:"serializer:json;type:text" json:"stages"`
-}
-
-func (CNApprovalConfig) TableName() string { return "magang.cn_approval_configs" }
-
 type CNNumberCounter struct {
 	Kind       string `gorm:"primaryKey;type:varchar(32)"`
 	Year       int    `gorm:"primaryKey"`
@@ -46,7 +37,7 @@ type ChangeNote struct {
 	DocumentCode          string          `gorm:"index" json:"document_code"`
 	Section               string          `json:"section"`
 	ProcessDescription    string          `gorm:"type:text" json:"process_description"`
-	WorkflowSource        string          `gorm:"column:workflow_source;type:varchar(30);not null;default:'LEGACY'" json:"workflow_source"`
+	WorkflowSource        string          `gorm:"column:workflow_source;type:varchar(30);not null;default:'PENDING_MASTER_MAPPING'" json:"workflow_source"`
 	WorkflowSection       string          `gorm:"column:workflow_section;type:varchar(100)" json:"workflow_section"`
 	ProcessedDocumentName string          `json:"processed_document_name"`
 	ProcessedDocumentData string          `gorm:"type:text" json:"processed_document_data"`

@@ -160,43 +160,6 @@ func (h *ChangeNoteHandler) Update(c *gin.Context) {
 	}
 	response.OK(c, cn, "CN diperbarui")
 }
-func (h *ChangeNoteHandler) Configs(c *gin.Context) {
-	u := h.actor(c)
-	if u == nil {
-		return
-	}
-	if u.Role != "admin" {
-		response.Forbidden(c, "Hanya admin dapat mengatur approval")
-		return
-	}
-	v, err := h.svc.Configs()
-	if err != nil {
-		response.InternalError(c, "Gagal memuat konfigurasi")
-		return
-	}
-	response.OK(c, v, "success")
-}
-func (h *ChangeNoteHandler) SaveConfig(c *gin.Context) {
-	u := h.actor(c)
-	if u == nil {
-		return
-	}
-	if u.Role != "admin" {
-		response.Forbidden(c, "Hanya admin dapat mengatur approval")
-		return
-	}
-	var cfg models.CNApprovalConfig
-	if err := c.ShouldBindJSON(&cfg); err != nil {
-		response.BadRequest(c, "Konfigurasi tidak valid")
-		return
-	}
-	if err := h.svc.SaveConfig(&cfg); err != nil {
-		cnError(c, err)
-		return
-	}
-	response.OK(c, cfg, "Konfigurasi disimpan untuk pengajuan ke approval berikutnya")
-}
-
 func (h *ChangeNoteHandler) Approvers(c *gin.Context) {
 	if h.actor(c) == nil {
 		return

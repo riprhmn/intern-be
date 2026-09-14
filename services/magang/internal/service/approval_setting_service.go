@@ -28,10 +28,6 @@ type MappingEntryInput struct {
 
 type ReplaceMappingRequest struct {
 	Entries []MappingEntryInput `json:"entries"`
-	Seq1    string              `json:"seq_1"`
-	Seq2    string              `json:"seq_2"`
-	Seq3    string              `json:"seq_3"`
-	Seq4    string              `json:"seq_4"`
 }
 
 type DelegationRequest struct {
@@ -103,6 +99,9 @@ func validateMappingEntries(approvalType string, entries []MappingEntryInput) er
 		if entry.UserID == 0 {
 			continue
 		}
+		if _, exists := users[entry.UserID]; exists {
+			return errors.New("approver yang sama tidak boleh digunakan pada lebih dari satu sequence")
+		}
 		sequences[entry.Sequence]++
 		users[entry.UserID] = struct{}{}
 	}
@@ -149,52 +148,25 @@ func (s *ApprovalSettingService) ReplaceMapping(approvalType, sectionCode string
 	}
 
 	var finalEntries []MappingEntryInput
-
-	if len(req.Entries) > 0 {
-		for _, entry := range req.Entries {
-			code := strings.TrimSpace(entry.CodeName)
-			if strings.Contains(code, "—") {
-				code = strings.TrimSpace(strings.Split(code, "—")[0])
-			} else if strings.Contains(code, " - ") {
-				code = strings.TrimSpace(strings.Split(code, " - ")[0])
-			}
-			code = strings.ToUpper(code)
-
-			if code != "" {
-				var u models.User
-				if err := s.db.Where("is_active = ? AND (LOWER(BTRIM(code_name)) = LOWER(?) OR LOWER(BTRIM(username)) = LOWER(?))", true, code, code).First(&u).Error; err == nil {
-					finalEntries = append(finalEntries, MappingEntryInput{
-						Sequence: entry.Sequence,
-						UserID:   u.ID,
-						CodeName: u.CodeName,
-					})
-				}
-			}
+	for _, entry := range req.Entries {
+		code := strings.ToUpper(strings.TrimSpace(entry.CodeName))
+		var user models.User
+		query := s.db.Where("is_active = ? AND role = ? AND BTRIM(COALESCE(code_name, '')) <> ''", true, "approval")
+		if entry.UserID != 0 {
+			query = query.Where("id = ?", entry.UserID)
+		} else if code != "" {
+			query = query.Where("LOWER(BTRIM(code_name)) = LOWER(?)", code)
+		} else {
+			return nil, fmt.Errorf("approver SEQ %d wajib dipilih", entry.Sequence)
 		}
-	}
-
-	if len(finalEntries) == 0 {
-		codes := []string{req.Seq1, req.Seq2, req.Seq3, req.Seq4}
-		for i, code := range codes {
-			code = strings.TrimSpace(code)
-			if strings.Contains(code, "—") {
-				code = strings.TrimSpace(strings.Split(code, "—")[0])
-			} else if strings.Contains(code, " - ") {
-				code = strings.TrimSpace(strings.Split(code, " - ")[0])
-			}
-			code = strings.ToUpper(code)
-
-			if code != "" {
-				var u models.User
-				if err := s.db.Where("is_active = ? AND (LOWER(BTRIM(code_name)) = LOWER(?) OR LOWER(BTRIM(username)) = LOWER(?))", true, code, code).First(&u).Error; err == nil {
-					finalEntries = append(finalEntries, MappingEntryInput{
-						Sequence: i + 1,
-						UserID:   u.ID,
-						CodeName: u.CodeName,
-					})
-				}
-			}
+		if err := query.First(&user).Error; err != nil {
+			return nil, fmt.Errorf("approver SEQ %d tidak ditemukan atau tidak aktif", entry.Sequence)
 		}
+		finalEntries = append(finalEntries, MappingEntryInput{
+			Sequence: entry.Sequence,
+			UserID:   user.ID,
+			CodeName: user.CodeName,
+		})
 	}
 
 	req.Entries = finalEntries

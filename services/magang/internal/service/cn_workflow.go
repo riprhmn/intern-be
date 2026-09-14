@@ -71,9 +71,6 @@ func CNCanDecide(cn *models.ChangeNote, u *models.User) bool {
 	return cn.Stages[i].UserID == u.ID || cn.Stages[i].DelegateID == u.ID
 }
 func (s *ChangeNoteService) Visible(u *models.User, search, mode, department string, page, limit int) ([]models.ChangeNote, int64, error) {
-	if err := s.refreshPendingCNFixedApprovers(); err != nil {
-		return nil, 0, err
-	}
 	if err := s.refreshPendingCNDelegations(); err != nil {
 		return nil, 0, err
 	}
@@ -120,17 +117,16 @@ func (s *ChangeNoteService) Departments(u *models.User, mode string) ([]string, 
 type CNAction struct {
 	EffectedDate string `json:"effected_date"`
 
-	Form                *CNForm                `json:"form"`
-	DocumentCode        string                 `json:"document_code"`
-	DelegateID          uint64                 `json:"delegate_id"`
-	Action              string                 `json:"action"`
-	Version             uint64                 `json:"version"`
-	Comment             string                 `json:"comment"`
-	DocumentName        string                 `json:"document_name"`
-	DocumentData        string                 `json:"document_data"`
-	IsPIC               uint64                 `json:"is_pic"`
-	DepartmentStages    []models.ApprovalStage `json:"department_stages"`
-	FinalResultDocument string                 `json:"final_result_document"`
+	Form                *CNForm `json:"form"`
+	DocumentCode        string  `json:"document_code"`
+	DelegateID          uint64  `json:"delegate_id"`
+	Action              string  `json:"action"`
+	Version             uint64  `json:"version"`
+	Comment             string  `json:"comment"`
+	DocumentName        string  `json:"document_name"`
+	DocumentData        string  `json:"document_data"`
+	IsPIC               uint64  `json:"is_pic"`
+	FinalResultDocument string  `json:"final_result_document"`
 }
 
 type CNForm struct {
@@ -181,9 +177,6 @@ func validateCNForm(form *CNForm) error {
 }
 
 func (s *ChangeNoteService) Act(id uint64, u *models.User, a CNAction) (*models.ChangeNote, error) {
-	if err := s.refreshPendingCNFixedApprovers(); err != nil {
-		return nil, err
-	}
 	if err := s.refreshPendingCNDelegations(); err != nil {
 		return nil, err
 	}
@@ -203,7 +196,8 @@ func (s *ChangeNoteService) Act(id uint64, u *models.User, a CNAction) (*models.
 			if u.Role != "admin" && cn.UserID != u.ID {
 				return ErrCNForbidden
 			}
-			if cn.Status != "SUBMITTED" && cn.Status != "WAITING_ISO" && cn.Status != "REJECTED" {
+			masterMigration := u.Role == "admin" && cnNeedsReregistration(&cn)
+			if cn.Status != "SUBMITTED" && cn.Status != "WAITING_ISO" && cn.Status != "REJECTED" && !masterMigration {
 				return errors.New("Form hanya dapat diperbarui saat menunggu proses ISO")
 			}
 			resumeApproval := cn.Status == "REJECTED" && validCNHierarchy(&cn)
@@ -252,19 +246,6 @@ func (s *ChangeNoteService) Act(id uint64, u *models.User, a CNAction) (*models.
 				return err
 			}
 			a.Comment = "Hierarchy dibentuk otomatis oleh sistem"
-		case "remove_master_mapping":
-			if u.Role != "admin" || cn.WorkflowSource != cnWorkflowMasterMapping || cn.Status != "WAITING_APPROVAL" {
-				return ErrCNForbidden
-			}
-			for i := 1; i < len(cn.Stages)-1; i++ {
-				if cn.Stages[i].Status != "WAITING_APPROVAL" || cn.Stages[i].ActedAt != nil {
-					return errors.New("Integrasi mapping hanya dapat dilepas sebelum approver mulai memproses")
-				}
-			}
-			if err := startCNLegacyApproval(tx, &cn); err != nil {
-				return err
-			}
-			a.Comment = "Snapshot master mapping dilepas; hierarchy CN dikembalikan ke workflow lama"
 		case "delegate":
 			if u.Role != "admin" || cn.Status != "WAITING_APPROVAL" {
 				return ErrCNForbidden
@@ -336,9 +317,10 @@ func (s *ChangeNoteService) Act(id uint64, u *models.User, a CNAction) (*models.
 	return &cn, err
 }
 
-// Legacy workflows require an explicit ISO registration; existing history is retained.
+// Every active hierarchy must be a valid snapshot of Master Approving.
 func cnNeedsReregistration(cn *models.ChangeNote) bool {
-	return (cn.Status == "WAITING_APPROVAL" || cn.Status == "WAITING_PUBLISH") && !validCNHierarchy(cn)
+	return (cn.Status == "WAITING_APPROVAL" || cn.Status == "WAITING_PUBLISH") &&
+		(cn.WorkflowSource != cnWorkflowMasterMapping || !validCNHierarchy(cn))
 }
 
 func restartCNApproval(cn *models.ChangeNote) {
@@ -389,23 +371,6 @@ func validateCNPublication(cn *models.ChangeNote, u *models.User, a CNAction) er
 	}
 	return nil
 }
-func buildCNStages(cn *models.ChangeNote, dept, fixed []models.ApprovalStage) []models.ApprovalStage {
-	at := cn.CreatedAt
-	for _, event := range cn.History {
-		if event.ActorID == cn.UserID && (event.Action == "submit" || event.Action == "update_form") {
-			at = event.At
-		}
-	}
-	stages := []models.ApprovalStage{{Label: "Initiator", UserID: cn.UserID, Status: "APPROVED", ActorID: cn.UserID, ActedAt: &at, Comment: "Submit request"}}
-	for _, stage := range dept {
-		stages = append(stages, models.ApprovalStage{Label: stage.Label, UserID: stage.UserID, Status: "WAITING_APPROVAL"})
-	}
-	for i, label := range []string{"IS Section Head", "MQD Manager", "TDIV Head"} {
-		stages = append(stages, models.ApprovalStage{Label: label, UserID: fixed[i].UserID, Status: "WAITING_APPROVAL"})
-	}
-	return append(stages, models.ApprovalStage{Label: "Initiator (2nd)", UserID: cn.UserID, Status: "WAITING_APPROVAL"})
-}
-
 func startCNAutomaticApproval(tx *gorm.DB, cn *models.ChangeNote) error {
 	if strings.TrimSpace(cn.ProposedChange) == "" {
 		return errors.New("Pemohon wajib UPDATE DATA sebelum Tim ISO mengunggah Document to Revise")
@@ -424,68 +389,13 @@ func startCNAutomaticApproval(tx *gorm.DB, cn *models.ChangeNote) error {
 	if err != nil {
 		return err
 	}
-	if usedMaster {
-		return nil
-	}
-	return startCNLegacyApproval(tx, cn)
-}
-
-func startCNLegacyApproval(tx *gorm.DB, cn *models.ChangeNote) error {
-	document := cn.RevisedDocuments[0]
-
-	var accounts []models.User
-	if err := tx.Where("role = ? AND is_active = ?", "approval", true).Order("id ASC").Find(&accounts).Error; err != nil {
-		return err
-	}
-	routingDocuments := cn.RelatedDocuments
-	if len(routingDocuments) == 0 {
-		routingDocuments = []models.CNDocument{{Department: cnRelatedTarget(cn)}}
-	}
-	deptStages, err := resolveCNRelatedApprovers(routingDocuments, accounts)
-	if err != nil {
-		return err
-	}
-
-	var isoMappings []models.ApprovalMapping
-	if err := tx.Preload("User").Where(
-		"approval_type = ? AND section_code = ? AND is_active = ?", "CN", "ISO", true,
-	).Order("sequence, id").Find(&isoMappings).Error; err != nil {
-		return err
-	}
-	if len(isoMappings) != 3 {
-		return errors.New("Konfigurasi ISO belum divalidasi. Wajib buat Master Mapping untuk Section Code 'ISO' dengan urutan SEQ 1 (IS Section), SEQ 2 (MQD), SEQ 3 (TDIV)")
-	}
-	for i := range isoMappings {
-		if isoMappings[i].Sequence != i+1 {
-			return errors.New("Master mapping ISO harus berurutan SEQ 1, 2, 3")
+	if !usedMaster {
+		section := strings.ToUpper(strings.TrimSpace(cn.Section))
+		if section == "" {
+			section = "(SECTION BELUM DIISI)"
 		}
-		if !isoMappings[i].User.IsActive || isoMappings[i].User.Role != "approval" {
-			return fmt.Errorf("Approver ISO SEQ %d tidak valid", isoMappings[i].Sequence)
-		}
+		return fmt.Errorf("Master Approving CN untuk Section Code '%s' belum tersedia", section)
 	}
-
-	var isoStages []models.ApprovalStage
-	for _, mapping := range isoMappings {
-		isoStages = append(isoStages, models.ApprovalStage{UserID: mapping.UserID})
-	}
-	cn.Stages = buildCNStages(cn, deptStages, isoStages)
-	cn.IsPIC = isoMappings[0].UserID
-	if strings.TrimSpace(cn.DocumentCode) == "" {
-		year := cnYear(cn.CreatedAt)
-		number, err := nextCNSerial(tx, cnNumberKindChangeNote, year)
-		if err != nil {
-			return err
-		}
-		cn.DocumentCode = formatChangeNoteNumber(year, number)
-	}
-	cn.ProcessDescription = "Hierarchy ditentukan otomatis oleh sistem"
-	cn.WorkflowSource = "LEGACY"
-	cn.WorkflowSection = ""
-	cn.ProcessedDocumentName = document.Name
-	cn.ProcessedDocumentData = document.Data
-	cn.EffectedDate = ""
-	cn.FinalResultDocument = ""
-	cn.Status = "WAITING_APPROVAL"
 	return nil
 }
 
@@ -590,8 +500,8 @@ func activeCNDelegate(tx *gorm.DB, fromUserID uint64, section string) (uint64, e
 	now := time.Now().UTC()
 	secNorm := strings.TrimSpace(section)
 	err := tx.Where(
-		"from_user_id = ? AND is_active = ? AND approval_type IN ? AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?)",
-		fromUserID, true, []string{"CN", "ALL"}, now, now,
+		"from_user_id = ? AND is_active = ? AND approval_type IN ? AND (LOWER(TRIM(section_code)) = LOWER(?) OR UPPER(TRIM(section_code)) = 'ALL') AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?)",
+		fromUserID, true, []string{"CN", "ALL"}, secNorm, now, now,
 	).Order(clause.Expr{SQL: "CASE WHEN approval_type = 'CN' THEN 0 ELSE 1 END, CASE WHEN LOWER(TRIM(section_code)) = LOWER(?) THEN 0 WHEN section_code = 'ALL' THEN 1 ELSE 2 END, created_at DESC", Vars: []interface{}{secNorm}, WithoutParentheses: true}).
 		First(&delegation).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -606,17 +516,6 @@ func normalizeCNAccountField(value string) string {
 	return strings.ToLower(strings.Join(strings.Fields(value), " "))
 }
 
-func matchesCNApproverTitle(accountTitle, stageTitle string) bool {
-	return normalizeCNAccountField(accountTitle) == normalizeCNAccountField(stageTitle) || (stageTitle == "Concern Manager" && normalizeCNAccountField(accountTitle) == "manager")
-}
-
-func cnAccountTitleForStage(stageTitle string) string {
-	if stageTitle == "Concern Manager" {
-		return "Manager"
-	}
-	return stageTitle
-}
-
 func cnRelatedTarget(cn *models.ChangeNote) string {
 	department := strings.TrimSpace(cn.Department)
 	section := strings.TrimSpace(cn.Section)
@@ -624,134 +523,6 @@ func cnRelatedTarget(cn *models.ChangeNote) string {
 		return department
 	}
 	return department + " / " + section
-}
-func validateCNDepartmentApprover(u *models.User, department, title string) error {
-	if !u.IsActive || u.Role != "approval" {
-		return errors.New("Approver harus akun approval aktif")
-	}
-	if normalizeCNAccountField(department) == "" || normalizeCNAccountField(u.Department) != normalizeCNAccountField(department) {
-		return fmt.Errorf("%s harus berasal dari departemen %s", title, department)
-	}
-	if !matchesCNApproverTitle(u.Title, title) {
-		return fmt.Errorf("Title akun untuk %s harus diatur sebagai %s di Manage Account", title, cnAccountTitleForStage(title))
-	}
-	return nil
-}
-func matchesCNFixedApprover(u *models.User, label string) bool {
-	if u == nil || !u.IsActive || u.Role != "approval" {
-		return false
-	}
-	switch label {
-	case "IS Section Head":
-		return normalizeCNAccountField(u.Title) == "section head" && normalizeCNAccountField(u.Section) == "is"
-	case "MQD Manager":
-		return normalizeCNAccountField(u.Title) == "manager" && normalizeCNAccountField(u.Department) == "mqd"
-	case "TDIV Head":
-		return normalizeCNAccountField(u.Title) == "division head" && normalizeCNAccountField(u.Division) == "tdiv"
-	default:
-		return false
-	}
-}
-
-func validateCNFixedApprover(u *models.User, label string) error {
-	if matchesCNFixedApprover(u, label) {
-		return nil
-	}
-	return fmt.Errorf("Akun untuk %s tidak sesuai Title dan unit organisasi di Manage Account", label)
-}
-
-func resolveCNFixedApprovers(stages []models.ApprovalStage, accounts []models.User) ([]models.ApprovalStage, bool, error) {
-	expected := []string{"IS Section Head", "MQD Manager", "TDIV Head"}
-	if len(stages) != len(expected) {
-		return nil, false, errors.New("Approver tetap wajib tiga tahap")
-	}
-	resolved := append([]models.ApprovalStage(nil), stages...)
-	changed := false
-	for i, label := range expected {
-		if resolved[i].Label != label {
-			return nil, false, errors.New("Urutan approver tetap harus IS Section Head, MQD Manager, TDIV Head")
-		}
-		currentValid := false
-		candidates := []models.User{}
-		for j := range accounts {
-			if !matchesCNFixedApprover(&accounts[j], label) {
-				continue
-			}
-			candidates = append(candidates, accounts[j])
-			if accounts[j].ID == resolved[i].UserID {
-				currentValid = true
-			}
-		}
-		if currentValid {
-			continue
-		}
-		if len(candidates) == 0 {
-			return nil, false, fmt.Errorf("Akun yang sesuai untuk %s belum tersedia di Manage Account", label)
-		}
-		if len(candidates) > 1 {
-			return nil, false, fmt.Errorf("Terdapat lebih dari satu akun yang sesuai untuk %s; pilih approver melalui konfigurasi approval", label)
-		}
-		resolved[i].UserID = candidates[0].ID
-		changed = true
-	}
-	return resolved, changed, nil
-}
-
-func applyResolvedCNFixedApprovers(cn *models.ChangeNote, fixed []models.ApprovalStage) bool {
-	assignments := make(map[string]uint64, len(fixed))
-	for _, stage := range fixed {
-		assignments[stage.Label] = stage.UserID
-	}
-	changed := false
-	for i := range cn.Stages {
-		userID, ok := assignments[cn.Stages[i].Label]
-		if !ok || cn.Stages[i].Status != "WAITING_APPROVAL" || cn.Stages[i].UserID == userID {
-			continue
-		}
-		cn.Stages[i].UserID = userID
-		cn.Stages[i].DelegateID = 0
-		changed = true
-	}
-	return changed
-}
-
-func (s *ChangeNoteService) refreshPendingCNFixedApprovers() error {
-	return s.repo.DB.Transaction(func(tx *gorm.DB) error {
-		var accounts []models.User
-		if err := tx.Where("role = ? AND is_active = ?", "approval", true).Order("id ASC").Find(&accounts).Error; err != nil {
-			return err
-		}
-		var fixed models.CNApprovalConfig
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("department = ? AND section = ?", "*", "").First(&fixed).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
-		} else if err != nil {
-			return err
-		}
-		resolved, configChanged, err := resolveCNFixedApprovers(fixed.Stages, accounts)
-		if err != nil {
-			return nil
-		}
-		fixed.Stages = resolved
-		if configChanged {
-			if err := tx.Save(&fixed).Error; err != nil {
-				return err
-			}
-		}
-		var notes []models.ChangeNote
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("status IN ? AND workflow_source <> ?", []string{"WAITING_APPROVAL", "REJECTED"}, cnWorkflowMasterMapping).Find(&notes).Error; err != nil {
-			return err
-		}
-		for i := range notes {
-			if !applyResolvedCNFixedApprovers(&notes[i], resolved) {
-				continue
-			}
-			notes[i].Version++
-			if err := tx.Save(&notes[i]).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
 }
 
 // refreshPendingCNDelegations keeps delegation access dynamic while the owner
@@ -761,19 +532,13 @@ func (s *ChangeNoteService) refreshPendingCNDelegations() error {
 	return s.repo.DB.Transaction(func(tx *gorm.DB) error {
 		var notes []models.ChangeNote
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where(
-			"status = ?", "WAITING_APPROVAL",
+			"status = ? AND workflow_source = ?", "WAITING_APPROVAL", cnWorkflowMasterMapping,
 		).Find(&notes).Error; err != nil {
 			return err
 		}
 		for i := range notes {
 			changed := false
 			sec := notes[i].WorkflowSection
-			if sec == "" {
-				sec = notes[i].Section
-			}
-			if sec == "" {
-				sec = notes[i].Department
-			}
 			for stageIndex := 1; stageIndex < len(notes[i].Stages)-1; stageIndex++ {
 				stage := &notes[i].Stages[stageIndex]
 				if stage.Status != "WAITING_APPROVAL" || stage.ActedAt != nil {
@@ -796,60 +561,6 @@ func (s *ChangeNoteService) refreshPendingCNDelegations() error {
 		}
 		return nil
 	})
-}
-
-func validateCNConfig(db *gorm.DB, cfg *models.CNApprovalConfig) error {
-	if (cfg.Department == "*" && len(cfg.Stages) != 3) || (cfg.Department != "*" && len(cfg.Stages) != 2) {
-		return errors.New("Mapping departemen wajib Section Head dan Concern Manager; approver tetap wajib tiga tahap")
-	}
-	if cfg.Department != "*" && (cfg.Stages[0].Label != "Section Head" || cfg.Stages[len(cfg.Stages)-1].Label != "Concern Manager") {
-		return errors.New("Mapping lama harus diatur ulang: sequence pertama Section Head dan terakhir Concern Manager")
-	}
-	if cfg.Department == "*" {
-		for i, label := range []string{"IS Section Head", "MQD Manager", "TDIV Head"} {
-			if cfg.Stages[i].Label != label {
-				return errors.New("Urutan approver tetap harus IS Section Head, MQD Manager, TDIV Head")
-			}
-		}
-	}
-	for i := range cfg.Stages {
-		st := &cfg.Stages[i]
-		var u models.User
-		if st.UserID == 0 {
-			return fmt.Errorf("Approver sequence %d wajib diisi", i+1)
-		}
-		if err := db.First(&u, st.UserID).Error; err != nil || !u.IsActive || u.Role != "approval" {
-			return fmt.Errorf("Approver sequence %d harus akun approval aktif", i+1)
-		}
-		if cfg.Department == "*" {
-			if err := validateCNFixedApprover(&u, st.Label); err != nil {
-				return err
-			}
-		} else {
-			if err := validateCNDepartmentApprover(&u, cfg.Department, st.Label); err != nil {
-				return err
-			}
-		}
-		*st = models.ApprovalStage{Label: st.Label, UserID: st.UserID, Status: "WAITING_APPROVAL"}
-	}
-	return nil
-}
-func (s *ChangeNoteService) Configs() ([]models.CNApprovalConfig, error) {
-	v := []models.CNApprovalConfig{}
-	err := s.repo.DB.Order("department, section").Find(&v).Error
-	return v, err
-}
-func (s *ChangeNoteService) SaveConfig(cfg *models.CNApprovalConfig) error {
-	cfg.Department = strings.TrimSpace(cfg.Department)
-	cfg.Section = ""
-	if cfg.Department == "" {
-		return errors.New("Departemen wajib diisi")
-	}
-	if err := validateCNConfig(s.repo.DB, cfg); err != nil {
-		return err
-	}
-	cfg.ID = 0
-	return s.repo.DB.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "department"}, {Name: "section"}}, DoUpdates: clause.AssignmentColumns([]string{"stages"})}).Create(cfg).Error
 }
 
 func (s *ChangeNoteService) visibleQuery(u *models.User) *gorm.DB {
@@ -961,7 +672,10 @@ func validateCNUploadOwnership(cn *models.ChangeNote, u *models.User, form *CNFo
 		return errors.New("Data form wajib diisi")
 	}
 	equal := func(a, b []models.CNDocument) bool { return len(a) == 0 && len(b) == 0 || reflect.DeepEqual(a, b) }
-	if u.Role == "admin" && (strings.TrimSpace(cn.TWA) != strings.TrimSpace(form.TWA) || strings.TrimSpace(cn.ProposedChange) != strings.TrimSpace(form.ProposedChange) || strings.TrimSpace(cn.ReasonForChange) != strings.TrimSpace(form.ReasonForChange) || strings.TrimSpace(cn.SupportingDocuments) != strings.TrimSpace(form.SupportingDocuments)) {
+	// An ISO/admin who submitted the CN is still its initiator and may update
+	// the request fields. The ISO-only restriction applies when processing a CN
+	// submitted by somebody else.
+	if u.Role == "admin" && u.ID != cn.UserID && (strings.TrimSpace(cn.TWA) != strings.TrimSpace(form.TWA) || strings.TrimSpace(cn.ProposedChange) != strings.TrimSpace(form.ProposedChange) || strings.TrimSpace(cn.ReasonForChange) != strings.TrimSpace(form.ReasonForChange) || strings.TrimSpace(cn.SupportingDocuments) != strings.TrimSpace(form.SupportingDocuments)) {
 		return errors.New("Tim ISO/admin hanya dapat mengubah Document to Revise")
 	}
 	if u.Role != "admin" && !equal(cn.RevisedDocuments, form.RevisedDocuments) {
@@ -973,92 +687,13 @@ func validateCNUploadOwnership(cn *models.ChangeNote, u *models.User, form *CNFo
 	return nil
 }
 
-func resolveCNRelatedApprovers(docs []models.CNDocument, users []models.User) ([]models.ApprovalStage, error) {
-	return resolveCNRelatedApproversWithOverrides(docs, users, nil)
-}
-
-func resolveCNRelatedApproversWithOverrides(docs []models.CNDocument, users []models.User, overrides []models.ApprovalStage) ([]models.ApprovalStage, error) {
-	stages := []models.ApprovalStage{}
-	seen := map[string]bool{}
-	for _, doc := range docs {
-		target := strings.TrimSpace(doc.Department)
-		key := normalizeCNAccountField(target)
-		if key == "" {
-			return nil, errors.New("Related Dept/Section wajib diisi")
-		}
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		parts := strings.SplitN(target, " / ", 2)
-		for _, title := range []string{"Section Head", "Concern Manager"} {
-			matches := []models.User{}
-			for _, user := range users {
-				if !user.IsActive || user.Role != "approval" || !matchesCNApproverTitle(user.Title, title) || normalizeCNAccountField(user.Department) != normalizeCNAccountField(parts[0]) {
-					continue
-				}
-				if len(parts) == 2 && title == "Section Head" && normalizeCNAccountField(user.Section) != normalizeCNAccountField(parts[1]) {
-					continue
-				}
-				matches = append(matches, user)
-			}
-			label := title + " (" + target + ")"
-			if len(overrides) > 0 {
-				index := len(stages)
-				if index >= len(overrides) || overrides[index].Label != label {
-					return nil, errors.New("Urutan approver terkait tidak valid")
-				}
-				selected := false
-				for _, candidate := range matches {
-					if candidate.ID == overrides[index].UserID {
-						selected = true
-						break
-					}
-				}
-				if !selected {
-					return nil, fmt.Errorf("Approver manual untuk %s tidak sesuai jabatan, department, atau section", label)
-				}
-				stages = append(stages, models.ApprovalStage{Label: label, UserID: overrides[index].UserID})
-				continue
-			}
-			if len(matches) == 0 {
-				return nil, fmt.Errorf("Akun approval aktif dengan title %s untuk %s belum tersedia. Periksa Manage Account", cnAccountTitleForStage(title), target)
-			}
-			stages = append(stages, models.ApprovalStage{Label: label, UserID: matches[0].ID})
-		}
-	}
-	if len(stages) == 0 {
-		return nil, errors.New("Pengaju wajib mengisi Relevant Document to Revise dan Related Dept/Section")
-	}
-	if len(overrides) > 0 && len(overrides) != len(stages) {
-		return nil, errors.New("Jumlah approver terkait tidak sesuai dokumen terkait")
-	}
-	return stages, nil
-}
-
 func validCNHierarchy(cn *models.ChangeNote) bool {
 	n := len(cn.Stages)
-	if cn.WorkflowSource == cnWorkflowMasterMapping {
-		if n < 3 || cn.Stages[0].Label != "Initiator" || cn.Stages[n-1].Label != "Initiator (2nd)" || cn.Stages[n-1].UserID != cn.UserID {
-			return false
-		}
-		for i := 1; i < n-1; i++ {
-			if cn.Stages[i].UserID == 0 {
-				return false
-			}
-		}
-		return true
-	}
-	if n < 7 || (n-5)%2 != 0 || cn.Stages[0].Label != "Initiator" || cn.Stages[n-1].Label != "Initiator (2nd)" {
+	if cn.WorkflowSource != cnWorkflowMasterMapping || n < 3 || cn.Stages[0].Label != "Initiator" || cn.Stages[n-1].Label != "Initiator (2nd)" || cn.Stages[n-1].UserID != cn.UserID {
 		return false
 	}
-	for i, label := range []string{"IS Section Head", "MQD Manager", "TDIV Head"} {
-		if cn.Stages[n-4+i].Label != label {
-			return false
-		}
-	}
-	for i := 1; i < n-4; i += 2 {
-		if !(cn.Stages[i].Label == "Section Head" || strings.HasPrefix(cn.Stages[i].Label, "Section Head (")) || !(cn.Stages[i+1].Label == "Concern Manager" || strings.HasPrefix(cn.Stages[i+1].Label, "Concern Manager (")) {
+	for i := 1; i < n-1; i++ {
+		if cn.Stages[i].UserID == 0 {
 			return false
 		}
 	}

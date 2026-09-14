@@ -70,8 +70,6 @@ func SetupRouter(r *gin.Engine, itemSvc *service.ItemService, userSvc *service.U
 			{
 				changeNotes.GET("/summary", changeNoteHandler.Summary)
 				changeNotes.GET("/approvers", changeNoteHandler.Approvers)
-				changeNotes.GET("/approval-config", changeNoteHandler.Configs)
-				changeNotes.PUT("/approval-config", changeNoteHandler.SaveConfig)
 				changeNotes.GET("", changeNoteHandler.GetAll)
 				changeNotes.GET("/:id", changeNoteHandler.GetByID)
 				changeNotes.POST("", changeNoteHandler.Create)

@@ -77,7 +77,7 @@ func (h *ApprovalSettingHandler) DeleteMapping(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
-	response.OK(c, nil, "Mapping dihapus; CN baru akan menggunakan workflow lama")
+	response.OK(c, nil, "Mapping dihapus; approval pada scope ini diblokir sampai Master Approving dibuat kembali")
 }
 
 func (h *ApprovalSettingHandler) GetDelegations(c *gin.Context) {

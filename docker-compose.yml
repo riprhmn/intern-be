@@ -1,3 +1,5 @@
+name: intern-be
+
 services:
   db:
     image: postgres:16-alpine
@@ -37,3 +39,5 @@ services:
 
 volumes:
   pgdata:
+    external: true
+    name: magang-be_pgdata

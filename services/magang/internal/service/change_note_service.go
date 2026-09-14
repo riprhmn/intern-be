@@ -28,9 +28,6 @@ func (s *ChangeNoteService) GetAll(search string, userID uint64, role string, pa
 }
 
 func (s *ChangeNoteService) GetByID(id uint64) (*models.ChangeNote, error) {
-	if err := s.refreshPendingCNFixedApprovers(); err != nil {
-		return nil, err
-	}
 	if err := s.refreshPendingCNDelegations(); err != nil {
 		return nil, err
 	}
