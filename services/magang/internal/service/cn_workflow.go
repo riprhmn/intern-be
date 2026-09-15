@@ -93,6 +93,8 @@ func (s *ChangeNoteService) Visible(u *models.User, search, mode, department str
 
 func applyCNMode(q *gorm.DB, mode string) *gorm.DB {
 	switch mode {
+	case "process":
+		return q.Where("status IN ?", []string{"SUBMITTED", "WAITING_ISO", "WAITING_APPROVAL", "WAITING_PUBLISH"})
 	case "iso_process":
 		return q.Where("status IN ?", []string{"SUBMITTED", "WAITING_ISO", "REJECTED", "WAITING_APPROVAL", "WAITING_PUBLISH"})
 	case "approval":
@@ -618,7 +620,7 @@ func cnApprovalTaskQuery(q *gorm.DB, userID uint64, exclude bool) *gorm.DB {
 }
 
 func cnModeUsesDepartmentScope(mode, role string) bool {
-	return mode == "process" || ((mode == "report" || mode == "active") && role != "admin")
+	return (mode == "dashboard" || mode == "process" || mode == "report" || mode == "active") && role != "admin"
 }
 
 func (s *ChangeNoteService) Summary(u *models.User) (map[string]int64, error) {
