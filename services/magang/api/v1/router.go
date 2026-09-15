@@ -47,6 +47,7 @@ func SetupRouter(r *gin.Engine, itemSvc *service.ItemService, userSvc *service.U
 
 			approvalSettings := protected.Group("/approval-settings")
 			{
+				approvalSettings.GET("/access", approvalSettingHandler.GetAccess)
 				approvalSettings.GET("/options", approvalSettingHandler.Options)
 				approvalSettings.GET("/mappings", approvalSettingHandler.GetMapping)
 				approvalSettings.GET("/delegations", approvalSettingHandler.GetDelegations)

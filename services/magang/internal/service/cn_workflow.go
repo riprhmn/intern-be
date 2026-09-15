@@ -589,14 +589,17 @@ func (s *ChangeNoteService) visibleQueryForMode(u *models.User, mode string) *go
 	}
 	if cnModeUsesDepartmentScope(mode, u.Role) {
 		department := strings.ToLower(strings.TrimSpace(u.Department))
+		if mode == "process" {
+			return q.Where(`LOWER(TRIM(department)) = ? OR user_id = ? OR is_pic = ? OR EXISTS (
+				SELECT 1 FROM jsonb_array_elements(COALESCE(NULLIF(stages, ''), '[]')::jsonb) stage
+				WHERE COALESCE(NULLIF(stage->>'user_id', ''), '0')::bigint = ?
+					OR COALESCE(NULLIF(stage->>'delegate_id', ''), '0')::bigint = ?
+			)`, department, u.ID, u.ID, u.ID, u.ID)
+		}
 		if department == "" {
 			return q.Where("1 = 0")
 		}
-		q = q.Where("LOWER(TRIM(department)) = ?", department)
-		if mode == "process" {
-			q = cnApprovalTaskQuery(q, u.ID, true)
-		}
-		return q
+		return q.Where("LOWER(TRIM(department)) = ?", department)
 	}
 	return s.visibleQuery(u)
 }

@@ -44,6 +44,19 @@ func (h *ApprovalSettingHandler) Options(c *gin.Context) {
 	response.OK(c, data, "success")
 }
 
+func (h *ApprovalSettingHandler) GetAccess(c *gin.Context) {
+	data, err := h.svc.Access(actorID(c))
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		response.NotFound(c, "User tidak ditemukan")
+		return
+	}
+	if err != nil {
+		response.InternalError(c, "Gagal memeriksa akses Approval Center")
+		return
+	}
+	response.OK(c, data, "success")
+}
+
 func (h *ApprovalSettingHandler) GetMapping(c *gin.Context) {
 	rows, err := h.svc.Mapping(c.Query("approval_type"), c.Query("section_code"))
 	if err != nil {

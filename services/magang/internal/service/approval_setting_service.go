@@ -39,6 +39,21 @@ type DelegationRequest struct {
 	EndsAt       *time.Time `json:"ends_at"`
 }
 
+type ApprovalAccessScope struct {
+	ApprovalType string `json:"approval_type"`
+	SectionCode  string `json:"section_code"`
+	Source       string `json:"source"`
+	FromUserID   uint64 `json:"from_user_id,omitempty"`
+}
+
+type ApprovalAccess struct {
+	CanAccess           bool                  `json:"can_access_approval_center"`
+	HasOwnMapping       bool                  `json:"has_own_mapping"`
+	HasActiveDelegation bool                  `json:"has_active_delegation"`
+	HasActiveAssignment bool                  `json:"has_active_assignment"`
+	Scopes              []ApprovalAccessScope `json:"approval_scopes"`
+}
+
 func normalizeApprovalScope(approvalType, sectionCode string, allowAll bool) (string, string, error) {
 	approvalType = strings.ToUpper(strings.TrimSpace(approvalType))
 	sectionCode = strings.ToUpper(strings.TrimSpace(sectionCode))
@@ -70,6 +85,63 @@ func (s *ApprovalSettingService) Options() (map[string]interface{}, error) {
 		return nil, err
 	}
 	return map[string]interface{}{"users": users, "sections": sections}, nil
+}
+
+func (s *ApprovalSettingService) Access(userID uint64) (*ApprovalAccess, error) {
+	result := &ApprovalAccess{Scopes: []ApprovalAccessScope{}}
+	var user models.User
+	if err := s.db.First(&user, userID).Error; err != nil {
+		return nil, err
+	}
+	if !user.IsActive {
+		return result, nil
+	}
+
+	if user.Role == "approval" && strings.TrimSpace(user.CodeName) != "" {
+		var mappings []models.ApprovalMapping
+		if err := s.db.Where("user_id = ? AND is_active = ?", userID, true).
+			Order("approval_type, section_code, sequence").Find(&mappings).Error; err != nil {
+			return nil, err
+		}
+		for _, mapping := range mappings {
+			result.Scopes = append(result.Scopes, ApprovalAccessScope{
+				ApprovalType: mapping.ApprovalType,
+				SectionCode:  mapping.SectionCode,
+				Source:       "MAPPING",
+			})
+		}
+		result.HasOwnMapping = len(mappings) > 0
+	}
+
+	now := time.Now().UTC()
+	var delegations []models.ApprovalDelegation
+	if err := s.db.Preload("FromUser").Where(
+		"to_user_id = ? AND is_active = ? AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?)",
+		userID, true, now, now,
+	).Order("approval_type, section_code, created_at").Find(&delegations).Error; err != nil {
+		return nil, err
+	}
+	for _, delegation := range delegations {
+		if !delegation.FromUser.IsActive {
+			continue
+		}
+		result.Scopes = append(result.Scopes, ApprovalAccessScope{
+			ApprovalType: delegation.ApprovalType,
+			SectionCode:  delegation.SectionCode,
+			Source:       "DELEGATION",
+			FromUserID:   delegation.FromUserID,
+		})
+		result.HasActiveDelegation = true
+	}
+
+	var activeAssignments int64
+	if err := cnApprovalTaskQuery(s.db.Model(&models.ChangeNote{}), userID, false).
+		Count(&activeAssignments).Error; err != nil {
+		return nil, err
+	}
+	result.HasActiveAssignment = activeAssignments > 0
+	result.CanAccess = result.HasOwnMapping || result.HasActiveDelegation || result.HasActiveAssignment
+	return result, nil
 }
 
 func (s *ApprovalSettingService) Mapping(approvalType, sectionCode string) ([]models.ApprovalMapping, error) {
