@@ -27,6 +27,7 @@ func main() {
 
 	userRepo := repository.NewUserRepository(database.DB)
 	userSvc := service.NewUserService(userRepo)
+	emailSvc := service.NewEmailService()
 
 	itemRepo := repository.NewItemRepository(database.DB)
 	itemSvc := service.NewItemService(itemRepo)
@@ -40,7 +41,7 @@ func main() {
 	approvalSettingSvc := service.NewApprovalSettingService(database.DB)
 	approvalSettingHandler := handler.NewApprovalSettingHandler(approvalSettingSvc)
 
-	authHandler := handler.NewAuthHandler(userSvc, config.App.Auth.JWTSecret)
+	authHandler := handler.NewAuthHandler(userSvc, emailSvc, config.App.Auth.JWTSecret)
 
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
@@ -57,6 +58,8 @@ func main() {
 	})
 
 	r.POST("/api/v1/magang/auth/login", authHandler.Login)
+	r.POST("/api/v1/magang/auth/forgot-password", authHandler.ForgotPassword)
+	r.POST("/api/v1/magang/auth/reset-password", authHandler.ResetPassword)
 
 	v1.SetupRouter(r, itemSvc, userSvc, changeNoteSvc, ancrHandler, approvalSettingHandler, authHandler, config.App.Auth.JWTSecret)
 

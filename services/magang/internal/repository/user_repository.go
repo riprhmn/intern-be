@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 	"strings"
+	"time"
 
 	"magang-be/services/magang/internal/models"
 
@@ -138,6 +139,15 @@ func (r *UserRepository) GetByUsername(username string) (*models.User, error) {
 	return &user, err
 }
 
+func (r *UserRepository) GetByIdentity(identity string) (*models.User, error) {
+	var user models.User
+	err := r.DB.Where("(username = ? OR email = ?) AND is_active = ?", identity, identity, true).First(&user).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &user, err
+}
+
 func (r *UserRepository) CodeNameExists(codeName string, excludeID uint64) (bool, error) {
 	var count int64
 	query := r.DB.Model(&models.User{}).Where("LOWER(BTRIM(code_name)) = LOWER(?)", strings.TrimSpace(codeName))
@@ -158,4 +168,28 @@ func (r *UserRepository) Update(user *models.User) error {
 
 func (r *UserRepository) Delete(id uint64) error {
 	return r.DB.Delete(&models.User{}, id).Error
+}
+
+func (r *UserRepository) SaveResetToken(userID uint64, token string, expiry time.Time) error {
+	return r.DB.Model(&models.User{}).Where("id = ?", userID).Updates(map[string]interface{}{
+		"reset_token":        token,
+		"reset_token_expiry": expiry,
+	}).Error
+}
+
+func (r *UserRepository) GetByResetToken(token string) (*models.User, error) {
+	var user models.User
+	err := r.DB.Where("reset_token = ? AND reset_token_expiry > ? AND is_active = ?", token, time.Now(), true).First(&user).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &user, err
+}
+
+func (r *UserRepository) UpdatePassword(userID uint64, password string) error {
+	return r.DB.Model(&models.User{}).Where("id = ?", userID).Updates(map[string]interface{}{
+		"password":           password,
+		"reset_token":        "",
+		"reset_token_expiry": nil,
+	}).Error
 }

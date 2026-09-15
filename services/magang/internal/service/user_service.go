@@ -1,9 +1,12 @@
 package service
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -41,6 +44,10 @@ func (s *UserService) GetByID(id uint64) (*models.User, error) {
 
 func (s *UserService) GetByUsername(username string) (*models.User, error) {
 	return s.repo.GetByUsername(username)
+}
+
+func (s *UserService) GetByIdentity(identity string) (*models.User, error) {
+	return s.repo.GetByIdentity(strings.TrimSpace(identity))
 }
 
 func (s *UserService) VerifyPassword(plain, hashed string) bool {
@@ -294,4 +301,48 @@ func (s *UserService) ValidateOrganizationSelection(selection OrganizationSelect
 		}
 	}
 	return nil
+}
+
+func (s *UserService) GenerateResetToken(identity string) (string, error) {
+	user, err := s.repo.GetByIdentity(strings.TrimSpace(identity))
+	if err != nil {
+		return "", err
+	}
+	if user == nil {
+		return "", errors.New("user not found")
+	}
+
+	randomBytes := make([]byte, 32)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(randomBytes)
+	expiry := time.Now().Add(15 * time.Minute)
+	if err := s.repo.SaveResetToken(user.ID, token, expiry); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func (s *UserService) ResetPassword(token, newPassword string) error {
+	if strings.TrimSpace(token) == "" {
+		return errors.New("reset token is required")
+	}
+	if len(newPassword) < 6 {
+		return errors.New("new password must be at least 6 characters")
+	}
+
+	user, err := s.repo.GetByResetToken(token)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return errors.New("invalid or expired reset token")
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	return s.repo.UpdatePassword(user.ID, string(hashedPassword))
 }
